@@ -5,7 +5,7 @@ from coralai.instances.coral.coral_physics import apply_physics
 from coralai.substrate.substrate import Substrate
 from coralai.evolution.ecosystem import Ecosystem
 from coralai.evolution.hyper_organism import HyperOrganism
-from coralai.substrate.visualization import Visualization
+from coralai.visualization import Visualization
 
 class CoralVis(Visualization):
     def __init__(self, substrate, ecosystem, vis_chs):

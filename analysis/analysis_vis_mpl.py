@@ -1,8 +1,9 @@
-import os
 import numpy as np
+
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Slider, Button
-from analysis_vis import AnalysisVisData, compose_analysis_vis
+
+from analysis_data import HistoryData
 
 def update_plots(axs, history_data, inds):
     run_data = history_data.curr_run_data
@@ -54,36 +55,62 @@ def update_plots(axs, history_data, inds):
     plt.draw()
 
 
-def visualize_run_data(history_data):
+def visualize_run_data(hist_dir: str, start_run_name: str, torch_device: str):
+    history_data = HistoryData(hist_dir, torch_device)
+    history_data.goto_run_name(start_run_name)
 
-    # Ensure the new subplot for the RGB image fits into the figure
-    fig, axs = plt.subplots(1, 2, figsize=(20, 8), sharex=True, sharey=True)
-    plt.subplots_adjust(bottom=0.2, left=0.05, right=0.95, top=0.99)  # Adjust margins
+    # Increase figure size for better spacing
+    fig, axs = plt.subplots(1, 2, figsize=(20, 8.5), sharex=True, sharey=True)
+    
+    # Use constrained layout to automatically adjust subplot params
+    plt.subplots_adjust(bottom=0.25, left=0.05, right=0.95, top=0.85)
+    fig.set_constrained_layout(True)
 
     inds = history_data.curr_run_data.substrate.ti_indices[None]
 
     # Initial plot
     update_plots(axs, history_data, inds)
 
-    # Slider for steps
-    ax_slider_step = plt.axes([0.2, 0.1, 0.65, 0.03], facecolor='lightgoldenrodyellow')
+    # Adjust the size and positioning of the sliders and buttons
+    slider_step_pos = [0.2, 0.15, 0.65, 0.03]
+    slider_run_pos = [0.2, 0.1, 0.65, 0.03]
+    button_width = 0.1
+    button_height = 0.04
+    button_spacing = 0.02
+    bottom_button_pos = 0.02
+    top_button_pos = 0.2
+
+    ax_slider_step = plt.axes(slider_step_pos, facecolor='lightgoldenrodyellow')
     slider_steps = Slider(ax_slider_step, 'Step', 0, len(history_data.curr_run_data.steps)-1, valinit=0, valstep=1)
 
-    # Slider for runs
-    ax_slider_run = plt.axes([0.2, 0.05, 0.65, 0.03], facecolor='lightgoldenrodyellow')
+    ax_slider_run = plt.axes(slider_run_pos, facecolor='lightgoldenrodyellow')
     slider_runs = Slider(ax_slider_run, 'Run', 0, len(history_data.run_names)-1, valinit=0, valstep=1)
 
-    # Buttons for step navigation
-    ax_next_step = plt.axes([0.85, 0.025, 0.1, 0.04])
+    # Position buttons with consistent spacing
+    ax_next_step = plt.axes([0.85, bottom_button_pos, button_width, button_height])
     btn_next_step = Button(ax_next_step, 'Next Step')
-    ax_prev_step = plt.axes([0.74, 0.025, 0.1, 0.04])
+    ax_prev_step = plt.axes([0.85 - button_width - button_spacing, bottom_button_pos, button_width, button_height])
     btn_prev_step = Button(ax_prev_step, 'Prev Step')
 
-    # Buttons for run navigation
-    ax_next_run = plt.axes([0.85, 0.15, 0.1, 0.04])
+    ax_next_run = plt.axes([0.85, top_button_pos, button_width, button_height])
     btn_next_run = Button(ax_next_run, 'Next Run')
-    ax_prev_run = plt.axes([0.74, 0.15, 0.1, 0.04])
+    ax_prev_run = plt.axes([0.85 - button_width - button_spacing, top_button_pos, button_width, button_height])
     btn_prev_run = Button(ax_prev_run, 'Prev Run')
+
+    ax_plot_genome_distance_matrix = plt.axes([0.85, bottom_button_pos + button_height + button_spacing, button_width, button_height])
+    btn_plot_genome_distance_matrix = Button(ax_plot_genome_distance_matrix, 'Plot Genome Distances')
+    
+    ax_plot_genome_knn_graph = plt.axes([0.85, bottom_button_pos + 2 * (button_height + button_spacing), button_width, button_height])
+    btn_plot_genome_knn_graph = Button(ax_plot_genome_knn_graph, 'Plot Genome KNN Graph')
+
+
+    def plot_genome_distance_matrix(event):
+        history_data.curr_run_data.population.plot_genome_distance_matrix(title = f"{history_data.curr_run_data.run_name} Step {history_data.curr_run_data.curr_step_number}")
+
+    def plot_genome_knn_graph(event):
+        history_data.curr_run_data.population.plot_knn_net(k=2,
+                                                           substrate=history_data.curr_run_data.substrate,
+                                                           title=f"{history_data.curr_run_data.run_name} Step {history_data.curr_run_data.curr_step_number}")
 
     def update_step(val):
         history_data.curr_run_data.curr_step_index = int(slider_steps.val)
@@ -121,4 +148,8 @@ def visualize_run_data(history_data):
     btn_prev_step.on_clicked(prev_step)
     btn_next_run.on_clicked(next_run)
     btn_prev_run.on_clicked(prev_run)
+    btn_plot_genome_distance_matrix.on_clicked(plot_genome_distance_matrix)
+    btn_plot_genome_knn_graph.on_clicked(plot_genome_knn_graph)
+
     plt.show()
+

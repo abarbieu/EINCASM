@@ -3,12 +3,11 @@ import torch
 import taichi as ti
 from dataclasses import dataclass
 from typing import Callable, List, Tuple
-from .substrate import Substrate
+from .substrate.substrate import Substrate
 
 @ti.dataclass
 class VisualizationTiData:
-    """Vis data to be sent to Taichi Kernels
-    """
+    """Vis data to be sent to Taichi Kernels"""
     mem_w: ti.i32
     mem_h: ti.i32
     img_w: ti.i32

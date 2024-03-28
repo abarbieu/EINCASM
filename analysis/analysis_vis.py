@@ -3,7 +3,7 @@ import json
 import torch
 from dataclasses import dataclass
 from coralai.substrate.substrate import Substrate
-from coralai.substrate.visualization import VisualizationData, add_channel_controls, compose_visualization
+from coralai.visualization import VisualizationData, add_channel_controls, compose_visualization
 
 @dataclass
 class AnalysisVisData(VisualizationData):

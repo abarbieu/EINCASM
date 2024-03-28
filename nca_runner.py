@@ -5,7 +5,7 @@ import taichi as ti
 import torch.nn as nn
 
 from coralai.substrate.substrate import Substrate
-from coralai.substrate.visualization import Visualization
+from coralai.visualization import Visualization
 from coralai.evolution.neat_evolver import NEATEvolver
 
 

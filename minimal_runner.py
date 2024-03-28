@@ -4,7 +4,7 @@ import torch
 import taichi as ti
 
 from coralai.substrate.substrate import Substrate
-from coralai.substrate.visualization import Visualization
+from coralai.visualization import Visualization
 from coralai.evolution.cppn_organism import CPPNOrganism
 from coralai.instances.minimal.minimal_organism_cnn import MinimalOrganismCNN
 from coralai.instances.minimal.minimal_organism_hyper import MinimalOrganismHyper

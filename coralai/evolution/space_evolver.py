@@ -46,8 +46,8 @@ class SpaceEvolver():
 
 
         self.neat_config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
-                           neat.DefaultSpeciesSet, neat.DefaultStagnation,
-                           config_path)
+                                        neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                                        config_path)
         
         self.timestep = 0
         self.out_mem = None
