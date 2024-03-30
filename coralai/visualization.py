@@ -109,6 +109,7 @@ def add_val_to_loc(
             mem[0, draw_data.channel_to_paint, (i + ind_x) % vis_data.mem_w, (j + ind_y) % vis_data.mem_h] += draw_data.val_to_paint
 
 
+
 def add_channel_controls(vis_data: VisualizationData, sub_window):
     """Adds sliders for each channel to the subwindow."""
     vis_data.chinds[0] = sub_window.slider_int(
@@ -173,8 +174,8 @@ def compose_visualization(vis_data: VisualizationData, subwindow_adders: List[Ca
     def update():
         for event_checker in event_handlers:
             event_checker(vis_data)
-
-        render_sub_window(vis_data, subwindow_adders)
+        if subwindow_adders is not None:
+            render_sub_window(vis_data, subwindow_adders)
 
         max_vals = torch.tensor([vis_data.substrate.mem[0, ch].max() for ch in vis_data.chinds])
         write_to_renderer(vis_data.ti_data, vis_data.substrate.mem, vis_data.image, max_vals, vis_data.chinds)
