@@ -5,109 +5,86 @@ import taichi as ti
 from PIL import Image
 from coralai.substrate.substrate import Substrate
 from coralai.visualization import compose_visualization, VisualizationData
-
+from matplotlib.widgets import Slider, Button
 import matplotlib.pyplot as plt
 from PIL import Image
 
-# @ti.kernel
-# def avg_neighs(mem: ti.types.ndarray(), out_mem: ti.types.ndarray()):
-#     # Relies on 2^n dimensions
-#     for batch, ch, i, j in ti.ndrange(mem.shape[0], mem.shape[1], mem.shape[2], mem.shape[3]):
-#         out_mem[batch, ch, i//2, j//2] += mem[batch, ch, i, j] / 4.0
+@ti.kernel
+def avg_neighs(mem: ti.types.ndarray(), out_mem: ti.types.ndarray()):
+    # Relies on 2^n dimensions
+    for batch, ch, i, j in ti.ndrange(mem.shape[0], mem.shape[1], mem.shape[2], mem.shape[3]):
+        out_mem[batch, ch, i//2, j//2] += mem[batch, ch, i, j] / 4.0
 
-# def renormalize_patterns(patterns: torch.Tensor):
-#     out_mem = torch.zeros((patterns.shape[0], patterns.shape[1], patterns.shape[2]//2, patterns.shape[3]//2), device=patterns.device)
-#     avg_neighs(patterns, out_mem)
-#     return out_mem
+def renormalize_patterns(patterns: torch.Tensor):
+    out_mem = torch.zeros((patterns.shape[0], patterns.shape[1], patterns.shape[2]//2, patterns.shape[3]//2), device=patterns.device)
+    avg_neighs(patterns, out_mem)
+    return out_mem
 
-# @ti.kernel
-# def upscale(pattern_coarse: ti.types.ndarray(), out_mem_fine: ti.types.ndarray()):
-#     for batch, ch, i, j in ti.ndrange(out_mem_fine.shape[0], out_mem_fine.shape[1], out_mem_fine.shape[2], out_mem_fine.shape[3]):
-#         out_mem_fine[batch, ch, i, j] = pattern_coarse[batch, ch, i//2, j//2]
-
-# def match_sizes(patterns_coarse: torch.Tensor, patterns_fine: torch.Tensor):
-#     coarse_upscaled = torch.zeros_like(patterns_fine)
-#     upscale(patterns_coarse, coarse_upscaled)
-#     return coarse_upscaled
-
-# def calc_overlaps(patterns1: torch.Tensor, patterns2: torch.Tensor):
-#     return torch.mean(patterns1 * patterns2, dim=(2, 3))
-
-# def calc_partial_complexities(patterns_coarse: torch.Tensor, patterns_fine: torch.Tensor):
-#     patterns_coarse_upscaled = match_sizes(patterns_coarse, patterns_fine)
-#     return torch.abs(calc_overlaps(patterns_coarse_upscaled, patterns_fine) -
-#                      (calc_overlaps(patterns_fine, patterns_fine) + calc_overlaps(patterns_coarse, patterns_coarse))/2.0)
-
-# def calc_all_partial_complexities(patterns: torch.Tensor, renorm_steps: int):
-#     """
-#     Patterns: (batch_size, n_chs, w, h)
-#     Returns: (batch_size, n_chs, renorm_steps)
-#     """
-#     all_partial_complexities = []
-#     scaling_factors = []
-#     for step in range(1, renorm_steps):
-#         patterns_coarse = renormalize_patterns(patterns)
-#         all_partial_complexities.append(calc_partial_complexities(patterns_coarse, patterns))
-#         scaling_factors.append((1,2**step))
-#         patterns = patterns_coarse
-#     return torch.stack(all_partial_complexities), scaling_factors
-
-# def calc_complexities(patterns: torch.Tensor, renorm_steps: int):
-#     """
-#     Patterns: (batch_size, n_chs, w, h)
-#     Returns: (batch_size, n_chs)
-#     """
-#     all_partial_complexities, _ = calc_all_partial_complexities(patterns, renorm_steps)
-#     return torch.sum(all_partial_complexities, dim=0)
-
-
+def calc_rg_flow_ragged(patterns: torch.Tensor, renorm_steps: int):
+    rg_flow = []
+    rg_flow.append(patterns)
+    for _ in range(renorm_steps):
+        rg_flow.append(renormalize_patterns(rg_flow[-1]))
+    return rg_flow
 
 
 @ti.kernel
-def renormalize_upscale(mem: ti.types.ndarray(), out_mem: ti.types.ndarray(), sample_size: ti.i32):
-    """Renormalizes all channels in memory by averaging every `sample_size * sample_size` chunk of cells into a single one.
-    No overlap (each metapixel is uniquely derived from a set of subpixels).
-    Edge metapixels, if cut off, are treated as smaller pixels
-    Everything is rescaled to the original size
+def upscale(pattern_coarse: ti.types.ndarray(), out_mem_fine: ti.types.ndarray()):
+    for batch, ch, i, j in ti.ndrange(out_mem_fine.shape[0], out_mem_fine.shape[1], out_mem_fine.shape[2], out_mem_fine.shape[3]):
+        out_mem_fine[batch, ch, i, j] = pattern_coarse[batch, ch, i//2, j//2]
+
+def match_sizes(patterns_coarse: torch.Tensor, patterns_fine: torch.Tensor):
+    coarse_upscaled = torch.zeros_like(patterns_fine)
+    upscale(patterns_coarse, coarse_upscaled)
+    return coarse_upscaled
+
+def calc_pixel_complexities(patterns_coarse: torch.Tensor, patterns_fine: torch.Tensor):
+    patterns_coarse_upscaled = match_sizes(patterns_coarse, patterns_fine)
+    return torch.abs((patterns_coarse_upscaled * patterns_fine) -
+                      ((patterns_coarse_upscaled * patterns_coarse_upscaled) +
+                       (patterns_fine * patterns_fine))/2.0)
+                     
+def calc_pixel_complexities_ragged(rg_flow: list):
+    pixel_complexities = []
+    for step in range(1, len(rg_flow)):
+        pixel_complexities.append(calc_pixel_complexities(rg_flow[step], rg_flow[step-1]))
+    return pixel_complexities
+
+def calc_overlaps(patterns1: torch.Tensor, patterns2: torch.Tensor):
+    return torch.mean(patterns1 * patterns2, dim=(2, 3))
+
+def calc_partial_complexities(patterns_coarse: torch.Tensor, patterns_fine: torch.Tensor):
+    patterns_coarse_upscaled = match_sizes(patterns_coarse, patterns_fine)
+    return torch.abs(calc_overlaps(patterns_coarse_upscaled, patterns_fine) -
+                     (calc_overlaps(patterns_fine, patterns_fine) + calc_overlaps(patterns_coarse, patterns_coarse))/2.0)
+
+def calc_all_partial_complexities(patterns: torch.Tensor, renorm_steps: int):
     """
-    for batch, ch, sub_i, sub_j in ti.ndrange(mem.shape[0], mem.shape[1],
-                                               (mem.shape[2] + sample_size - 1) // sample_size,
-                                               (mem.shape[3] + sample_size - 1) // sample_size):
-        sum = 0.0
-        num_pixels = 0
-        tl_i = sub_i*sample_size
-        tl_j = sub_j*sample_size
-        for super_i, super_j in ti.ndrange((tl_i, min(tl_i + sample_size, mem.shape[2])),
-                                           (tl_j, min(tl_j + sample_size, mem.shape[3]))):
-            sum += mem[batch, ch, super_i, super_j]
-            num_pixels += 1
-        avg_value = sum / num_pixels
-        for super_i, super_j in ti.ndrange((tl_i, min(tl_i + sample_size, mem.shape[2])),
-                                           (tl_j, min(tl_j + sample_size, mem.shape[3]))):
-            out_mem[batch, ch, super_i, super_j] = avg_value
+    Patterns: (batch_size, n_chs, w, h)
+    Returns: (batch_size, n_chs, renorm_steps)
+    """
+    all_partial_complexities = []
+    scaling_factors = []
+    for step in range(1, renorm_steps):
+        patterns_coarse = renormalize_patterns(patterns)
+        all_partial_complexities.append(calc_partial_complexities(patterns_coarse, patterns))
+        scaling_factors.append((1,2**step))
+        patterns = patterns_coarse
+    return torch.stack(all_partial_complexities), scaling_factors
 
-def calc_rg_flow(patterns, sample_sizes):
-    rg_flow = torch.zeros((len(sample_sizes), *patterns.shape), device=patterns.device)
-    for i, sample_size in enumerate(sample_sizes):
-        renormalize_upscale(patterns, rg_flow[i], sample_size)
-    return rg_flow
+def calc_complexities(patterns: torch.Tensor, renorm_steps: int):
+    """
+    Patterns: (batch_size, n_chs, w, h)
+    Returns: (batch_size, n_chs)
+    """
+    all_partial_complexities, _ = calc_all_partial_complexities(patterns, renorm_steps)
+    return torch.sum(all_partial_complexities, dim=0)
 
-def pixel_overlap(patterns1: torch.Tensor, patterns2: torch.Tensor):
-    return patterns1 * patterns2
-
-def calc_partial_pixel_complexities(rg_flow):
-    partial_pixel_complexities = torch.zeros_like(rg_flow)
-    for i in range(1, rg_flow.shape[0]):
-        partial_pixel_complexities[i] = torch.abs(
-            pixel_overlap(rg_flow[i], rg_flow[i-1]) -
-            (pixel_overlap(rg_flow[i], rg_flow[i]) + pixel_overlap(rg_flow[i-1], rg_flow[i-1]))/2.0
-        )
-    return partial_pixel_complexities
 
 
 if __name__ == "__main__":
     ti.init(ti.metal)
-    renorm_steps = 10
+    renorm_steps = 8
 
     msc_path = os.path.join(os.path.dirname(__file__), 'msc')
     image_names = sorted([f for f in os.listdir(msc_path) if f.endswith('.png')])  # Sort the images
@@ -119,39 +96,82 @@ if __name__ == "__main__":
         torch_image = torch.from_numpy(np_image).permute(2, 0, 1).unsqueeze(0).float()  # Convert to torch tensor and adjust dimensions
         patterns[idx] = torch_image
 
-    sample_sizes = [2, 4, 8, 16, 32, 64, 128, 256]
 
-    rg_flow = calc_rg_flow(patterns, sample_sizes)
-    pixel_complexities = calc_partial_pixel_complexities(rg_flow)
-    complexity_data = torch.sum(pixel_complexities, dim=(0,2))
-    complexity_data = complexity_data/torch.max(complexity_data)
+    rg_flow = calc_rg_flow_ragged(patterns, renorm_steps)
+    pixel_complexities = calc_pixel_complexities_ragged(rg_flow)
+    print(pixel_complexities[0].shape)
 
-    n_cols = 12
-    # Calculate the number of rows needed for 3 images per row
-    num_rows = len(complexity_data)*2 // n_cols + (1 if len(complexity_data)*2 % n_cols else 0)
 
-    # Plot each image with its complexity, wrapping to a new row every 3 images
-    fig, axs = plt.subplots(num_rows, n_cols, figsize=(20, num_rows * 2))
-    axs = axs.flatten()  # Flatten the array to make indexing easier
-    for idx, (stacked_complexity, image_name) in enumerate(zip(complexity_data, image_names)):
-        half_idx = idx * 2  # Calculate index for the left half (complexity)
-        image_path = os.path.join(msc_path, image_name)
-        image = Image.open(image_path)
-        
-        axs[half_idx].matshow(stacked_complexity.cpu().numpy(), cmap='viridis')
-        axs[half_idx].set_title(f"{image_name} Complexity")
-        axs[half_idx].axis('off')
-        
-        axs[half_idx + 1].imshow(image)
-        axs[half_idx + 1].set_title(f"{image_name} Original")
-        axs[half_idx + 1].axis('off')
-    
-    # Hide any unused axes if the number of images is not a multiple of 3
-    for idx in range(len(image_names), len(axs)):
-        axs[idx].axis('off')
-    
-    plt.tight_layout()
+    # Initialize figure and axes for image and heatmap display
+    fig, ax = plt.subplots()
+    plt.subplots_adjust(left=0.25, bottom=0.25)
+
+    # Display the first image and its first renormalization level as a heatmap
+    img_display = ax.imshow(patterns[0].permute(1, 2, 0).numpy(), extent=[0, 1024, 0, 1024])
+    heatmap_display = ax.imshow(pixel_complexities[0][0][0].numpy(), cmap='viridis', alpha=0.75, extent=[0, 1024, 0, 1024], interpolation='nearest')
+
+    # Slider for selecting the renormalization level
+    axcolor = 'lightgoldenrodyellow'
+    ax_renorm = plt.axes([0.25, 0.1, 0.65, 0.03], facecolor=axcolor)
+    slider_renorm = Slider(ax_renorm, 'Renorm Level', 0, len(pixel_complexities)-1, valinit=0, valstep=1)
+
+    # Slider for selecting the image index
+    ax_img = plt.axes([0.25, 0.15, 0.65, 0.03], facecolor=axcolor)
+    slider_img = Slider(ax_img, 'Image Index', 0, len(patterns)-1, valinit=0, valstep=1)
+
+    def update(val):
+        renorm_level = int(slider_renorm.val)
+        img_index = int(slider_img.val)
+        img = patterns[img_index].permute(1, 2, 0).numpy()
+        heatmap = pixel_complexities[renorm_level][img_index][0].numpy()
+
+        # Update image display
+        img_display.set_data(img)
+
+        # Upscale heatmap to match original image size and update heatmap display
+        heatmap_upscaled = np.kron(heatmap, np.ones((2**renorm_level, 2**renorm_level)))
+        heatmap_display.set_data(heatmap_upscaled)
+        heatmap_display.set_extent([0, img.shape[1], 0, img.shape[0]])
+
+        fig.canvas.draw_idle()
+
+    # Call update function on slider value change
+    slider_renorm.on_changed(update)
+    slider_img.on_changed(update)
+
     plt.show()
+
+    # rg_flow = calc_rg_flow(patterns, sample_sizes)
+    # pixel_complexities = calc_partial_pixel_complexities(rg_flow)
+    # complexity_data = torch.sum(pixel_complexities, dim=(0,2))
+    # complexity_data = complexity_data/torch.max(complexity_data)
+
+    # n_cols = 12
+    # # Calculate the number of rows needed for 3 images per row
+    # num_rows = len(complexity_data)*2 // n_cols + (1 if len(complexity_data)*2 % n_cols else 0)
+
+    # # Plot each image with its complexity, wrapping to a new row every 3 images
+    # fig, axs = plt.subplots(num_rows, n_cols, figsize=(20, num_rows * 2))
+    # axs = axs.flatten()  # Flatten the array to make indexing easier
+    # for idx, (stacked_complexity, image_name) in enumerate(zip(complexity_data, image_names)):
+    #     half_idx = idx * 2  # Calculate index for the left half (complexity)
+    #     image_path = os.path.join(msc_path, image_name)
+    #     image = Image.open(image_path)
+        
+    #     axs[half_idx].matshow(stacked_complexity.cpu().numpy(), cmap='viridis')
+    #     axs[half_idx].set_title(f"{image_name} Complexity")
+    #     axs[half_idx].axis('off')
+        
+    #     axs[half_idx + 1].imshow(image)
+    #     axs[half_idx + 1].set_title(f"{image_name} Original")
+    #     axs[half_idx + 1].axis('off')
+    
+    # # Hide any unused axes if the number of images is not a multiple of 3
+    # for idx in range(len(image_names), len(axs)):
+    #     axs[idx].axis('off')
+    
+    # plt.tight_layout()
+    # plt.show()
 
 
 # if __name__ == "__main__":
@@ -378,3 +398,55 @@ if __name__ == "__main__":
 #     for i, j in ti.ndrange(patterns_fine.shape[2], patterns_fine.shape[3]):
 #         for batch, ch in ti.ndrange(patterns_coarse.shape[0], patterns_coarse.shape[1]):
 #             overlaps[batch, ch] += (patterns_coarse[batch, ch, i//2, j//2] * patterns_fine[batch, ch, i, j])
+
+
+
+
+
+
+
+
+# SLOW -------------------------------
+
+# @ti.kernel
+# def renormalize_upscale(mem: ti.types.ndarray(), out_mem: ti.types.ndarray(), sample_size: ti.i32):
+#     """Renormalizes all channels in memory by averaging every `sample_size * sample_size` chunk of cells into a single one.
+#     No overlap (each metapixel is uniquely derived from a set of subpixels).
+#     Edge metapixels, if cut off, are treated as smaller pixels
+#     Everything is rescaled to the original size
+#     """
+#     for batch, ch, sub_i, sub_j in ti.ndrange(mem.shape[0], mem.shape[1],
+#                                                (mem.shape[2] + sample_size - 1) // sample_size,
+#                                                (mem.shape[3] + sample_size - 1) // sample_size):
+#         sum = 0.0
+#         num_pixels = 0
+#         tl_i = sub_i*sample_size
+#         tl_j = sub_j*sample_size
+#         for super_i, super_j in ti.ndrange((tl_i, min(tl_i + sample_size, mem.shape[2])),
+#                                            (tl_j, min(tl_j + sample_size, mem.shape[3]))):
+#             sum += mem[batch, ch, super_i, super_j]
+#             num_pixels += 1
+#         avg_value = sum / num_pixels
+#         for super_i, super_j in ti.ndrange((tl_i, min(tl_i + sample_size, mem.shape[2])),
+#                                            (tl_j, min(tl_j + sample_size, mem.shape[3]))):
+#             out_mem[batch, ch, super_i, super_j] = avg_value
+
+# def calc_rg_flow(patterns, sample_sizes):
+#     rg_flow = torch.zeros((len(sample_sizes), *patterns.shape), device=patterns.device)
+#     for i, sample_size in enumerate(sample_sizes):
+#         renormalize_upscale(patterns, rg_flow[i], sample_size)
+#     return rg_flow
+
+# def pixel_overlap(patterns1: torch.Tensor, patterns2: torch.Tensor):
+#     return patterns1 * patterns2
+
+# def calc_partial_pixel_complexities(rg_flow):
+#     partial_pixel_complexities = torch.zeros_like(rg_flow)
+#     for i in range(1, rg_flow.shape[0]):
+#         partial_pixel_complexities[i] = torch.abs(
+#             pixel_overlap(rg_flow[i], rg_flow[i-1]) -
+#             (pixel_overlap(rg_flow[i], rg_flow[i]) + pixel_overlap(rg_flow[i-1], rg_flow[i-1]))/2.0
+#         )
+#     return partial_pixel_complexities
+
+# --------------------------------------------------------------
