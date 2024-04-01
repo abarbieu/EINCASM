@@ -1,7 +1,8 @@
-from typing import TypeVar, Type
+from typing import Callable, TypeVar, Type
 from dataclasses import dataclass
 import os
 import taichi as ti
+import torch
 import pickle
 from typing import List
 import uuid
@@ -11,134 +12,113 @@ import numpy as np
 import networkx as nx
 from numpy.typing import NDArray
 
+from pytorch_neat.linear_net import LinearNet
+from pytorch_neat.activations import identity_activation
+
+
 from coralai.substrate.substrate import Substrate
+from coralai.coralai_config import CoralaiConfig
 
 from .reportable import Reportable
 from .reportable_neat_config import ReportableNeatConfig
-
 T = TypeVar('T', bound='Population')
 
-def calc_abundance(substrate, genome_i):
-    return substrate['genome'].eq(genome_i).sum().item()
+def create_torch_net(config: CoralaiConfig, genome: neat.DefaultGenome):
+    input_coords = []
+    # TODO: adjust for direcitonal kernel?
+    for ch in range(config.n_senses):
+        input_coords.append([0, 0, config.sense_chinds[ch]])
+        for offset_i in range(config.dir_order.shape[0]):
+            offset_x = config.dir_kernel[config.dir_order[offset_i], 0]
+            offset_y = config.dir_kernel[config.dir_order[offset_i], 1]
+            input_coords.append([offset_x, offset_y, config.sense_chinds[ch]])
 
-def calc_SAD(substrate, genomes):
-    SAD = [] # species abundance distribution
-    for i in range(len(genomes)):
-        SAD.append(calc_abundance(substrate, i))
-    return np.array(SAD)
+    output_coords = []
+    for ch in range(config.n_acts):
+        output_coords.append([0, 0, config.act_chinds[ch]])
 
-def get_genome_coverage(substrate, SAD):
-    return SAD / (substrate.mem.shape[2] * substrate.mem.shape[3])
+    net = LinearNet.create(
+        genome,
+        config.neat_config,
+        input_coords=input_coords,
+        output_coords=output_coords,
+        weight_threshold=0.0,
+        weight_max=3.0,
+        activation=identity_activation,
+        cppn_activation=identity_activation,
+        device=config.torch_device,
+    )
+    return net
 
-def gen_genome_distance_matrix(genomes, neat_config):
-    # Creates a similarity matrix between all genomes in a list using NEAT's genome distance
-    num_genomes = len(genomes)
-    # Initialize the matrix with zeros
-    distance_matrix = [[0 for _ in range(num_genomes)] for _ in range(num_genomes)]
+@ti.kernel
+def apply_weights_and_biases(mem: ti.types.ndarray(), out_mem: ti.types.ndarray(),
+                             sense_chinds: ti.types.ndarray(),
+                             combined_weights: ti.types.ndarray(), combined_biases: ti.types.ndarray(),
+                             dir_kernel: ti.types.ndarray(), dir_order: ti.types.ndarray(),
+                             ti_inds: ti.template()):
+    inds = ti_inds[None]
+    for i, j, act_k in ti.ndrange(mem.shape[2], mem.shape[3], out_mem.shape[0]):
+        val = 0.0
+        rot = mem[0, inds.rot, i, j]
+        genome_key = int(mem[0, inds.genome, i, j])
+        for sense_ch_n in ti.ndrange(sense_chinds.shape[0]):
+            # base case [0,0]
+            start_weight_ind = sense_ch_n * (dir_kernel.shape[0]+1)
+            val += (mem[0, sense_chinds[sense_ch_n], i, j] *
+                    combined_weights[genome_key, 0, act_k, start_weight_ind])
+            for offset_m in ti.ndrange(dir_kernel.shape[0]):
+                ind = int((rot + dir_order[offset_m]) % dir_kernel.shape[0])
+                neigh_x = (i + dir_kernel[ind, 0]) % mem.shape[2]
+                neigh_y = (j + dir_kernel[ind, 1]) % mem.shape[3]
+                weight_ind = start_weight_ind + offset_m
+                val += mem[0, sense_chinds[sense_ch_n], neigh_x, neigh_y] * combined_weights[genome_key, 0, act_k, weight_ind]
+        out_mem[act_k, i, j] = val + combined_biases[genome_key, 0, act_k, 0]
     
-    # Fill the matrix with distances
-    for i in range(num_genomes):
-        for j in range(i+1, num_genomes):  # Start from i+1 to avoid redundant calculations
-            distance = genomes[i].distance(genomes[j], neat_config)
-            distance_matrix[i][j] = distance
-            distance_matrix[j][i] = distance  # The matrix is symmetric
-    
-    return distance_matrix
 
-def plot_genome_distance_matrix(distance_matrix, title):
-    # Plots a heatmap of the genome distance matrix with labels for run name and step number
-    fig, ax = plt.subplots()
-    cax = ax.imshow(distance_matrix, cmap="viridis", vmin=0)
-    fig.colorbar(cax, label="Distance")
-    ax.set_title(title)
-    plt.show()
-
-
-def create_knn_net(distance_matrix: NDArray[np.float64], k: int, sub_cov_distr: NDArray[np.float64], ages: NDArray[np.int64]):
-    distance_matrix_np = np.array(distance_matrix)
-    
-    num_nodes = distance_matrix_np.shape[0]
-    
-    G = nx.Graph()
-    
-    for i in range(num_nodes):
-        if sub_cov_distr[i] > 0:
-            G.add_node(i, genome_i=i, substrate_coverage=sub_cov_distr[i], age=ages[i])
-    
-    for i in G.nodes:
-        genome_i = G.nodes[i]['genome_i']
-        distances = distance_matrix_np[genome_i, :]
-        nearest_indices = np.argsort(distances)[0:k+1]
-        for j in nearest_indices:
-            G.add_edge(i, j, weight=distances[j])
-    
-    return G
-
-def plot_knn_net(G: nx.Graph, title: str):
-    plt.figure(figsize=(10, 8))  # Adjust figure size
-    pos = nx.spring_layout(G)  # Compute layout
-    
-    # Extract node attributes for plotting
-    coverages_scaled = np.array([G.nodes[node]['substrate_coverage'] for node in G.nodes]) * 100000  # Scale pop size for visibility
-    ages = np.array([G.nodes[node]['age'] for node in G.nodes])
-
-    max_age = max(ages) if max(ages) > 0 else 1  # Ensure max_age is not zero to avoid division by zero\
-
-    age_colors = [plt.cm.summer(age / max_age) for age in ages]  # Normalize ages and map to colormap
-    nx.draw(G, pos, with_labels=True, node_size=coverages_scaled, node_color=age_colors, font_size=8, edge_color="gray")
-    plt.title(title, fontsize=14)  # Set title with run name and step number
-    plt.colorbar(plt.cm.ScalarMappable(cmap='summer'), label='Genome Age')
-    plt.show()
-
+def apply_population_nets(population: T, substrate: Substrate, config: CoralaiConfig):
+    pass
 
 class Population(Reportable):
     neat_config: ReportableNeatConfig
     genomes: List[neat.DefaultGenome]
+    ages: NDArray[np.int64]
     alive_keys: List[int]
     dead_keys: List[int]
+    create_torch_net: Callable[[CoralaiConfig, neat.DefaultGenome], LinearNet]
+    apply_population_nets: Callable[[T, Substrate, CoralaiConfig]]
+    nets: List[LinearNet]
+    weights: torch.Tensor # shape: (n_genomes, 1, n_actuators, n_sensors)
+    biases: torch.Tensor  # shape: (n_genomes, 1, n_actuators, 1)
+
     SAD: NDArray[np.int64]
     substrate_coverage: NDArray[np.float64]
     distance_matrix: NDArray[np.float64]
-    ages: NDArray[np.int64]
     knn_net: nx.Graph
 
     report_prefix: str = "population"
 
-    def __init__(self, neat_config: ReportableNeatConfig, genomes: List[neat.DefaultGenome], ages: List[int]):
+    def __init__(self, neat_config: ReportableNeatConfig, genomes: List[neat.DefaultGenome], ages: List[int],
+                 create_torch_net: Callable[[CoralaiConfig, neat.DefaultGenome], LinearNet]):
         self.neat_config = neat_config
         self.genomes = genomes
         self.ages = ages
-    
-    def gen_distance_matrix(self):
-        self.distance_matrix = gen_genome_distance_matrix(self.genomes, self.neat_config)
-        return self.distance_matrix
-    
-    def plot_genome_distance_matrix(self, title: str, distance_matrix: NDArray[np.float64] = None):
-        if distance_matrix is None:
-            if self.distance_matrix is None:
-                self.gen_distance_matrix()
-            distance_matrix = self.distance_matrix
-        plot_genome_distance_matrix(distance_matrix, title)
-    
-    def plot_knn_net(self, k: int, title: str, substrate: Substrate = None, substrate_coverage: NDArray[np.float64] = None):
-        if not substrate_coverage:
-            if not substrate:
-                raise ValueError("Substrate must be provided if substrate_coverage is not provided")
-            substrate_coverage = calc_SAD(substrate, self.genomes)
-            self.SAD = substrate_coverage
-            self.substrate_coverage = get_genome_coverage(substrate, substrate_coverage)
-        self.distance_matrix = gen_genome_distance_matrix(self.genomes, self.neat_config, substrate_coverage)
-        self.knn_net = create_knn_net(self.distance_matrix, k, self.substrate_coverage, self.ages)
-        plot_knn_net(self.knn_net, title)
+        self.create_torch_net = create_torch_net
 
     @classmethod
-    def gen_random_pop(cls: Type[T], neat_config: ReportableNeatConfig, pop_size: int) -> T:
+    def gen_random_pop(cls: Type[T], neat_config: ReportableNeatConfig, pop_size: int,
+                       create_torch_net: Callable[[CoralaiConfig, neat.DefaultGenome], LinearNet]) -> T:
         genomes = [neat.DefaultGenome(uuid.uuid4()) for _ in range(pop_size)]
         for genome in genomes:
             genome.configure_new(neat_config.genome_config)
 
         ages = [0 for _ in range(pop_size)]
-        return cls(neat_config, genomes, ages)
+        return cls(neat_config, genomes, ages, create_torch_net)
+    
+    def gen_torch_nets(self):
+        self.nets = [self.create_torch_net(self.neat_config, genome) for genome in self.genomes]
+        self.weights = torch.stack([net.weight for net in self.nets])
+        self.biases = torch.stack([net.bias for net in self.nets])
+        return self.nets, self.weights, self.biases
     
     def save_snapshot(self, snapshot_dir: str, report_suffix: str = None) -> str:
         """Implements Reportable.save_snapshot, dumps genomes and ages to pkl files, reports config if it hasn't been"""

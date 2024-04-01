@@ -7,6 +7,7 @@ import torch
 T = TypeVar('T', bound='Reportable')
 
 class Reportable():
+    # TODO: Save initial configuration separately from snapshot. E.g. substrate layout vs mem @ timestep
     """
     ## A reportable object can be stored and loaded from a snapshot.
     - `report_prefix` is used to construct the file name of the snapshot

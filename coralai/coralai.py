@@ -1,5 +1,7 @@
 import os
 import torch
+import torch.nn as nn
+import taichi as ti
 from typing import TypeVar, Type
 from dataclasses import dataclass
 from typing import List
@@ -8,17 +10,8 @@ from coralai.population import Population
 from coralai.reportable import Reportable
 from coralai.reportable_neat_config import ReportableNeatConfig
 from coralai.substrate.substrate import Substrate
+from coralai.coralai_config import CoralaiConfig
 
-
-@dataclass
-class CoralaiConfig(Reportable):
-    kernel: torch.Tensor
-    sense_chs: List[str]
-    act_chs: List[str]
-    torch_device: torch.device
-
-    report_prefix: str = "coralai_config_snap"
-    
 
 TCORALAI = TypeVar('TCORALAI', bound="Coralai")
 class Coralai(Reportable):
